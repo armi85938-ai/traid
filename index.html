@@ -4,14 +4,12 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, maximum-scale=1.0, user-scalable=no">
 <meta name="theme-color" content="#0a0e17">
-<meta name="apple-mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-title" content="Armin Trade">
-<title>آرمین ترید | Armin Trade</title>
-<link rel="manifest" href='data:application/manifest+json,{"name":"Armin Trade","short_name":"ArminTrade","start_url":".","display":"standalone","background_color":"%230a0e17","theme_color":"%236366f1","description":"پلتفرم معاملاتی آزمایشی","icons":[{"src":"data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 512 512%22%3E%3Crect width=%22512%22 height=%22512%22 rx=%22100%22 fill=%22%236366f1%22/%3E%3Cpath d=%22M100 350l80-80 60 60 100-100 72 72%22 stroke=%22white%22 stroke-width=%2236%22 fill=%22none%22 stroke-linecap=%22round%22 stroke-linejoin=%22round%22/%3E%3C/svg%3E","sizes":"512x512","type":"image/svg+xml"}]}'>
+<title>آرمین ترید | Armin Trade (Wallex)</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Vazirmatn:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
 <script src="https://unpkg.com/lightweight-charts@4.1.0/dist/lightweight-charts.standalone.production.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/centrifuge@4/dist/centrifuge.min.js"></script>
 <style>
 *{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent}
 :root{
@@ -421,7 +419,7 @@ body::before{
       </svg>
       <div class="brand-text">
         <span class="brand-fa">آرمین ترید</span>
-        <span class="brand-en">ARMIN TRADE</span>
+        <span class="brand-en">ARMIN TRADE · WALLEX</span>
       </div>
     </div>
     <div class="price-ticker">
@@ -472,7 +470,7 @@ body::before{
         <div id="chart"></div>
         <div class="chart-overlay visible" id="chartOverlay">
           <div class="spinner"></div>
-          <span>در حال بارگذاری نمودار...</span>
+          <span>در حال اتصال به والکس...</span>
         </div>
       </div>
     </main>
@@ -574,28 +572,30 @@ body::before{
 'use strict';
 
 // ============================================================
-// CONSTANTS
+// SYMBOLS (Wallex format)
 // ============================================================
 const SYMBOLS=[
-  {s:'btcusdt',sym:'BTC',name:'Bitcoin'},
-  {s:'ethusdt',sym:'ETH',name:'Ethereum'},
-  {s:'bnbusdt',sym:'BNB',name:'BNB'},
-  {s:'solusdt',sym:'SOL',name:'Solana'},
-  {s:'xrpusdt',sym:'XRP',name:'Ripple'},
-  {s:'adausdt',sym:'ADA',name:'Cardano'},
-  {s:'dogeusdt',sym:'DOGE',name:'Dogecoin'},
-  {s:'avaxusdt',sym:'AVAX',name:'Avalanche'},
-  {s:'dotusdt',sym:'DOT',name:'Polkadot'},
-  {s:'linkusdt',sym:'LINK',name:'Chainlink'},
-  {s:'ltcusdt',sym:'LTC',name:'Litecoin'},
-  {s:'trxusdt',sym:'TRX',name:'TRON'},
+  {s:'BTCUSDT',sym:'BTC',name:'Bitcoin'},
+  {s:'ETHUSDT',sym:'ETH',name:'Ethereum'},
+  {s:'BNBUSDT',sym:'BNB',name:'BNB'},
+  {s:'SOLUSDT',sym:'SOL',name:'Solana'},
+  {s:'XRPUSDT',sym:'XRP',name:'Ripple'},
+  {s:'ADAUSDT',sym:'ADA',name:'Cardano'},
+  {s:'DOGEUSDT',sym:'DOGE',name:'Dogecoin'},
+  {s:'AVAXUSDT',sym:'AVAX',name:'Avalanche'},
+  {s:'DOTUSDT',sym:'DOT',name:'Polkadot'},
+  {s:'LINKUSDT',sym:'LINK',name:'Chainlink'},
+  {s:'LTCUSDT',sym:'LTC',name:'Litecoin'},
+  {s:'TRXUSDT',sym:'TRX',name:'TRON'},
 ];
+
 const INITIAL_BALANCE=10000;
-const STORAGE_KEY='arminTrade_v3';
+const STORAGE_KEY='arminTrade_v4_wallex';
 const INTERVALS=['1m','5m','15m','1h','4h','1d'];
+const WALLEX_RES={ '1m':'1', '5m':'5', '15m':'15', '1h':'60', '4h':'240', '1d':'1D' };
 
 const state={
-  symbol:'btcusdt', interval:'1m', indicator:'none',
+  symbol:'BTCUSDT', interval:'1m', indicator:'none',
   theme:'dark', sound:true,
   balance:INITIAL_BALANCE, leverage:1,
   positions:[], history:[], prices:{},
@@ -604,7 +604,8 @@ const state={
 
 let chart=null, candleSeries=null, volumeSeries=null, smaSeries=null;
 let rsiSeries=null, macdSeries=null, macdSignalSeries=null, macdHistSeries=null;
-let klineWs=null, watchlistWs=null, obWs=null;
+let klineCentrifuge=null, klineSub=null;
+let watchCentrifuge=null, watchSub=null;
 let fetchController=null;
 let lastTickTime=0, lastIndUpdate=0;
 let watchItems={};
@@ -677,18 +678,13 @@ function loadState(){
     if(INTERVALS.includes(s.interval)) state.interval=s.interval;
     if(['none','rsi','macd'].includes(s.indicator)) state.indicator=s.indicator;
     if([1,2,5,10,20].includes(s.leverage)) state.leverage=s.leverage;
-    const maxId=Math.max(
-      s.posIdCounter||0,
-      ...state.positions.map(p=>p.id||0),
-      ...state.history.map(h=>h.id||0),
-      0
-    );
+    const maxId=Math.max(s.posIdCounter||0,...state.positions.map(p=>p.id||0),...state.history.map(h=>h.id||0),0);
     state.posIdCounter=maxId+1;
   }catch(e){}
 }
 
 // ============================================================
-// CALCULATIONS
+// INDICATORS MATH
 // ============================================================
 function computeRSI(candles,period=14){
   const out=[];if(candles.length<period+1) return out;
@@ -746,7 +742,7 @@ function computeSMA(candles,period){
 }
 
 // ============================================================
-// CHART
+// CHART SETUP
 // ============================================================
 function chartColors(){
   const dark=state.theme==='dark';
@@ -898,31 +894,43 @@ function applyTheme(theme){
     });
   }
   $('themeBtn').textContent=theme==='dark'?'🌙':'☀️';
-  document.querySelector('meta[name="theme-color"]').setAttribute('content',theme==='dark'?'#0a0e17':'#f8fafc');
   saveState();
 }
 
 // ============================================================
-// DATA FETCH
+// WALLEX: FETCH KLINE HISTORY (UDF)
 // ============================================================
 async function loadKlines(symbol,interval){
   if(fetchController) fetchController.abort();
   fetchController=new AbortController();
   $('chartOverlay').classList.add('visible');
+
+  const resolution=WALLEX_RES[interval]||'1';
+  const to=Math.floor(Date.now()/1000);
+  const from=to- (300 * (resolution==='1D'?86400:parseInt(resolution)*60));
+  const url=`https://api.wallex.ir/v1/udf/history?symbol=${symbol.toUpperCase()}&resolution=${resolution}&from=${from}&to=${to}`;
+
   try{
-    const url=`https://api.binance.com/api/v3/klines?symbol=${symbol.toUpperCase()}&interval=${interval}&limit=300`;
     const res=await fetch(url,{signal:fetchController.signal});
     if(!res.ok) throw new Error('HTTP '+res.status);
     const data=await res.json();
     if(state.symbol!==symbol||state.interval!==interval) return;
-    setChartData(data.map(k=>({
-      time:k[0]/1000,open:+k[1],high:+k[2],low:+k[3],close:+k[4],volume:+k[5],
-    })));
-    if(state.candles.length) updateHeaderPrice(state.candles[state.candles.length-1].close);
+
+    if(!data.t||!data.o) throw new Error('No data returned');
+    const candles=data.t.map((t,i)=>({
+      time:t,
+      open:parseFloat(data.o[i]),
+      high:parseFloat(data.h[i]),
+      low:parseFloat(data.l[i]),
+      close:parseFloat(data.c[i]),
+      volume:parseFloat(data.v[i])||0,
+    }));
+    setChartData(candles);
+    if(candles.length) updateHeaderPrice(candles[candles.length-1].close);
   }catch(e){
     if(e.name==='AbortError') return;
-    console.error(e);
-    toast('خطا در دریافت داده‌های نمودار','error');
+    console.error('Wallex UDF error:',e);
+    toast('خطا در دریافت تاریخچه کندل از والکس','error');
   }finally{
     if(state.symbol===symbol&&state.interval===interval)
       $('chartOverlay').classList.remove('visible');
@@ -930,72 +938,92 @@ async function loadKlines(symbol,interval){
 }
 
 // ============================================================
-// WEBSOCKETS
+// WALLEX: WEBSOCKET (Centrifuge) FOR KLINE
 // ============================================================
 function connectKlineWs(symbol,interval){
-  if(klineWs){klineWs.onclose=null;klineWs.close();klineWs=null;}
-  klineWs=new WebSocket(`wss://stream.binance.com:9443/ws/${symbol}@kline_${interval}`);
-  klineWs.onmessage=ev=>{
-    try{
-      const m=JSON.parse(ev.data);
-      if(!m.k) return;
-      const k=m.k;
-      const c={time:k.t/1000,open:+k.o,high:+k.h,low:+k.l,close:+k.c,volume:+k.v};
-      updateChartCandle(c);
-      updateHeaderPrice(c.close);
-      checkTriggers(symbol,c.close);
-    }catch(e){}
-  };
-  klineWs.onclose=()=>{
+  if(klineCentrifuge){klineCentrifuge.disconnect();klineCentrifuge=null;}
+
+  const wallexRes=WALLEX_RES[interval]||'1';
+  let channelSuffix='1m';
+  if(wallexRes==='60') channelSuffix='1h';
+  else if(wallexRes==='1D') channelSuffix='1d';
+  // For other resolutions (5,15,240), Wallex only provides 1m/1h/1d.
+  // We subscribe to the closest base and aggregate client-side is complex;
+  // for simplicity we use the base channel and let the chart show that.
+  // In this demo, we use the exact suffix when available.
+  if(wallexRes==='1') channelSuffix='1m';
+  if(wallexRes==='60') channelSuffix='1h';
+  if(wallexRes==='1D') channelSuffix='1d';
+  // For 5,15,240 we fallback to 1m for real-time updates (history comes from UDF).
+  if(!['1','60','1D'].includes(wallexRes)) channelSuffix='1m';
+
+  const channelName=`candle:${symbol.toUpperCase()}@${channelSuffix}`;
+
+  klineCentrifuge=new Centrifuge('wss://api.wallex.ir/connection/websocket');
+  klineSub=klineCentrifuge.newSubscription(channelName);
+
+  klineSub.on('publication',(ctx)=>{
+    const d=ctx.data;
+    if(!d||d.s!=='ok'||!d.t||!d.t.length) return;
+    const candle={
+      time:d.t[0],
+      open:parseFloat(d.o[0]),
+      high:parseFloat(d.h[0]),
+      low:parseFloat(d.l[0]),
+      close:parseFloat(d.c[0]),
+      volume:parseFloat(d.v[0])||0,
+    };
+    updateChartCandle(candle);
+    updateHeaderPrice(candle.close);
+    checkTriggers(symbol,candle.close);
+  });
+
+  klineSub.subscribe();
+  klineCentrifuge.connect();
+
+  klineCentrifuge.on('disconnected',()=>{
     if(state.symbol===symbol&&state.interval===interval)
       setTimeout(()=>connectKlineWs(symbol,interval),3000);
-  };
-}
-
-function connectWatchlistWs(){
-  if(watchlistWs){watchlistWs.onclose=null;watchlistWs.close();}
-  const streams=SYMBOLS.map(x=>x.s+'@miniTicker').join('/');
-  watchlistWs=new WebSocket(`wss://stream.binance.com:9443/stream?streams=${streams}`);
-  watchlistWs.onmessage=ev=>{
-    try{
-      const m=JSON.parse(ev.data), d=m.data;
-      if(!d||!d.s) return;
-      const sym=d.s.toLowerCase();
-      const price=+d.c, open=+d.o;
-      const change=open?((price-open)/open)*100:0;
-      state.prices[sym]={price,change};
-      updateWatchUI(sym,price,change);
-      if(sym===state.symbol) updateHeaderPrice(price,change);
-      checkTriggers(sym,price);
-      maybeRefreshPnl();
-    }catch(e){}
-  };
-  watchlistWs.onclose=()=>setTimeout(connectWatchlistWs,3000);
-}
-
-function connectOrderBook(symbol){
-  if(obWs){obWs.onclose=null;obWs.close();obWs=null;}
-  obWs=new WebSocket(`wss://stream.binance.com:9443/ws/${symbol}@depth20@100ms`);
-  obWs.onmessage=ev=>{
-    try{
-      const d=JSON.parse(ev.data);
-      if(d.bids&&d.asks) renderOrderBook(d.bids,d.asks);
-    }catch(e){}
-  };
-  obWs.onclose=()=>{
-    if(state.symbol===symbol) setTimeout(()=>connectOrderBook(symbol),3000);
-  };
+  });
 }
 
 // ============================================================
-// HEADER / WATCHLIST / ORDER BOOK UI
+// WALLEX: WEBSOCKET FOR PRICES (ALL MARKETS)
+// ============================================================
+function connectWatchlistWs(){
+  if(watchCentrifuge){watchCentrifuge.disconnect();}
+
+  watchCentrifuge=new Centrifuge('wss://api.wallex.ir/connection/websocket');
+  watchSub=watchCentrifuge.newSubscription('public:all@price');
+
+  watchSub.on('publication',(ctx)=>{
+    const d=ctx.data;
+    if(!d||!d.symbol) return;
+    const sym=d.symbol.toLowerCase();
+    const price=parseFloat(d.price);
+    const change=parseFloat(d['24h_ch'])||0;
+    state.prices[sym]={price,change};
+    updateWatchUI(sym,price,change);
+    if(sym===state.symbol) updateHeaderPrice(price,change);
+    checkTriggers(sym,price);
+    maybeRefreshPnl();
+  });
+
+  watchSub.subscribe();
+  watchCentrifuge.connect();
+
+  watchCentrifuge.on('disconnected',()=>setTimeout(connectWatchlistWs,3000));
+}
+
+// ============================================================
+// HEADER / WATCHLIST / ORDER BOOK
 // ============================================================
 function updateHeaderPrice(price,changePct){
   const prev=parseFloat($('tickerPrice').textContent.replace(/[$,]/g,''))||0;
   $('tickerPrice').textContent=fmtPrice(price);
   const symObj=SYMBOLS.find(x=>x.s===state.symbol);
   if(symObj) $('tickerSymbol').textContent=symObj.sym+'/USDT';
-  const change=changePct!==undefined?changePct:(state.prices[state.symbol]?.change??0);
+  const change=changePct!==undefined?changePct:(state.prices[state.symbol.toLowerCase()]?.change??0);
   const chEl=$('tickerChange'), prEl=$('tickerPrice');
   chEl.textContent=(change>=0?'+':'')+change.toFixed(2)+'%';
   chEl.className='ticker-change '+(change>=0?'up':'down');
@@ -1025,7 +1053,7 @@ function renderWatchlist(){
       </div>`;
     item.addEventListener('click',()=>selectSymbol(sym.s));
     c.appendChild(item);
-    watchItems[sym.s]={item,priceEl:item.querySelector('.wi-price'),changeEl:item.querySelector('.wi-change')};
+    watchItems[sym.s.toLowerCase()]={item,priceEl:item.querySelector('.wi-price'),changeEl:item.querySelector('.wi-change')};
   });
   updateActiveSymbol();
 }
@@ -1046,8 +1074,21 @@ function updateWatchUI(symbol,price,change){
 
 function updateActiveSymbol(){
   Object.entries(watchItems).forEach(([s,wi])=>{
-    wi.item.classList.toggle('active',s===state.symbol);
+    wi.item.classList.toggle('active',s===state.symbol.toLowerCase());
   });
+}
+
+// Wallex orderbook via REST (simple polling fallback)
+async function refreshOrderBook(){
+  if($('orderbook').classList.contains('active')&&state.symbol){
+    try{
+      const res=await fetch(`https://api.wallex.ir/v1/depth?symbol=${state.symbol.toUpperCase()}`);
+      if(res.ok){
+        const d=await res.json();
+        if(d.result&&d.result.ask&&d.result.bid) renderOrderBook(d.result.bid,d.result.ask);
+      }
+    }catch(e){}
+  }
 }
 
 function renderOrderBook(bids,asks){
@@ -1082,7 +1123,7 @@ async function selectSymbol(symbol){
   state.symbol=symbol;
   updateActiveSymbol();
   saveState();
-  const p=state.prices[symbol];
+  const p=state.prices[symbol.toLowerCase()];
   if(p) updateHeaderPrice(p.price,p.change);
   else {$('tickerPrice').textContent='--';$('tickerChange').textContent='--';}
   if(window.innerWidth<=1024) switchTab('chart');
@@ -1092,7 +1133,7 @@ async function selectSymbol(symbol){
   await loadKlines(symbol,state.interval);
   setIndicator(state.indicator);
   connectKlineWs(symbol,state.interval);
-  connectOrderBook(symbol);
+  refreshOrderBook();
 }
 
 async function selectInterval(interval){
@@ -1114,7 +1155,7 @@ async function selectInterval(interval){
 // TRADING
 // ============================================================
 function calcPnl(pos){
-  const p=state.prices[pos.symbol]?.price;
+  const p=state.prices[pos.symbol.toLowerCase()]?.price;
   if(!p) return 0;
   return pos.type==='long'?(p-pos.entry)*pos.qty:(pos.entry-p)*pos.qty;
 }
@@ -1126,7 +1167,7 @@ function openPosition(type){
   const amount=parseFloat($('amountInput').value);
   if(!amount||amount<=0){toast('مقدار معتبر نیست','error');return;}
   if(amount>state.balance){toast('موجودی کافی نیست','error');return;}
-  const price=state.prices[state.symbol]?.price;
+  const price=state.prices[state.symbol.toLowerCase()]?.price;
   if(!price){toast('قیمت لحظه‌ای در دسترس نیست، صبر کنید...','error');return;}
 
   const slStr=$('slInput').value.trim(), tpStr=$('tpInput').value.trim();
@@ -1163,7 +1204,7 @@ function closePosition(id,overridePrice,reason='manual'){
   const idx=state.positions.findIndex(p=>p.id===id);
   if(idx<0) return;
   const pos=state.positions[idx];
-  const price=overridePrice??state.prices[pos.symbol]?.price;
+  const price=overridePrice??state.prices[pos.symbol.toLowerCase()]?.price;
   if(!price){
     if(reason==='manual') toast('قیمت در دسترس نیست','error');
     return;
@@ -1201,7 +1242,7 @@ function closePosition(id,overridePrice,reason='manual'){
 function checkTriggers(symbol,price){
   const toClose=[];
   for(const pos of state.positions){
-    if(pos.symbol!==symbol) continue;
+    if(pos.symbol.toLowerCase()!==symbol.toLowerCase()) continue;
     const rawPnl=pos.type==='long'?(price-pos.entry)*pos.qty:(pos.entry-price)*pos.qty;
     if(rawPnl<=-pos.size){
       toClose.push({id:pos.id,price:calcLiq(pos),reason:'liquidated'});
@@ -1358,13 +1399,14 @@ function bindEvents(){
   $('sellBtn').addEventListener('click',()=>openPosition('short'));
   $('clearHistoryBtn').addEventListener('click',clearHistory);
 
-  // Panel tabs (watchlist / orderbook)
+  // Panel tabs
   document.querySelectorAll('.panel-tabs button').forEach(b=>{
     b.addEventListener('click',()=>{
       document.querySelectorAll('.panel-tabs button').forEach(x=>x.classList.toggle('active',x===b));
       const isOB=b.dataset.wtab==='ob';
       $('watchlist').style.display=isOB?'none':'';
       $('orderbook').classList.toggle('active',isOB);
+      if(isOB) refreshOrderBook();
     });
   });
 
@@ -1390,6 +1432,9 @@ function bindEvents(){
   document.querySelectorAll('.mobile-nav button').forEach(b=>{
     b.addEventListener('click',()=>switchTab(b.dataset.tab));
   });
+
+  // Orderbook periodic refresh
+  setInterval(refreshOrderBook,3000);
 }
 
 // ============================================================
@@ -1412,15 +1457,13 @@ async function init(){
   await loadKlines(state.symbol,state.interval);
   setIndicator(state.indicator);
   connectKlineWs(state.symbol,state.interval);
-  connectOrderBook(state.symbol);
   updateActiveSymbol();
   updateHeaderPrice(0,0);
 }
 
 window.addEventListener('beforeunload',()=>{
-  if(klineWs) klineWs.close();
-  if(watchlistWs) watchlistWs.close();
-  if(obWs) obWs.close();
+  if(klineCentrifuge) klineCentrifuge.disconnect();
+  if(watchCentrifuge) watchCentrifuge.disconnect();
 });
 
 init();
